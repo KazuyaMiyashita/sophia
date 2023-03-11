@@ -319,7 +319,7 @@ func main() {
 
 	systemMessage, found := os.LookupEnv("SYSTEM_MESSAGE")
 	if !found {
-		systemMessage = "assistant の名前はフレデリカです"
+		systemMessage = "assistant の名前はソフィアです"
 	}
 
 	preludeMessage := gogpt.ChatCompletionMessage{Role: "system", Content: systemMessage}

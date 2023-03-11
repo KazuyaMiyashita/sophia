@@ -1,4 +1,4 @@
-module github.com/tkawachi/frederica
+module github.com/KazuyaMiyashita/sophia
 
 go 1.20
 
