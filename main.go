@@ -35,6 +35,7 @@ type Frederica struct {
 	botID          string
 	botUserID      string
 	preludes       []gogpt.ChatCompletionMessage
+	postludes      []gogpt.ChatCompletionMessage
 }
 
 func convertConversation(messages []slack.Message, botID string) []gogpt.ChatCompletionMessage {
@@ -135,7 +136,7 @@ func (fred *Frederica) handleOsieteAI(ev *slackevents.ReactionAddedEvent) {
 		return
 	}
 	// prepend prelude to truncated
-	truncated = append(fred.preludes, truncated...)
+	truncated = append(append(fred.preludes, truncated...), fred.postludes...)
 	// append reaction message if it's not located at the end
 	if len(truncated) == 0 || truncated[len(truncated)-1].Content != srcMessage.Text {
 		truncated = append(truncated, gogpt.ChatCompletionMessage{
@@ -204,7 +205,7 @@ func (fred *Frederica) handleMention(ev *slackevents.AppMentionEvent) {
 		return
 	}
 	// prepend prelude to truncated
-	truncated = append(fred.preludes, truncated...)
+	truncated = append(append(fred.preludes, truncated...), fred.postludes...)
 	logMessages(truncated)
 	completion, err := fred.createChatCompletion(context.Background(), truncated)
 	if err != nil {
@@ -324,6 +325,13 @@ func main() {
 
 	preludeMessage := gogpt.ChatCompletionMessage{Role: "system", Content: systemMessage}
 
+	systemMessagePost, foundPost := os.LookupEnv("SYSTEM_MESSAGE_POST")
+	if !foundPost {
+		systemMessagePost = "" // 「以上の会話について、assistant は語尾に「ですわ」を付けて返答してください。」のような設定
+	}
+
+	postludeMessage := gogpt.ChatCompletionMessage{Role: "system", Content: systemMessagePost}
+
 	slackClient := slack.New(
 		botToken,
 		slack.OptionDebug(false),
@@ -353,6 +361,7 @@ func main() {
 		botID:          authTestResponse.BotID,
 		botUserID:      authTestResponse.UserID,
 		preludes:       []gogpt.ChatCompletionMessage{preludeMessage},
+		postludes:      []gogpt.ChatCompletionMessage{postludeMessage},
 	}
 
 	go fred.eventLoop()
