@@ -4,16 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"log"
-	"math/big"
-	"os"
-	"strconv"
-
 	tokenizer "github.com/samber/go-gpt-3-encoder"
 	gogpt "github.com/sashabaranov/go-gpt3"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
+	"log"
+	"math/big"
+	"os"
+	"strconv"
 )
 
 func FirstNonEmptyString(strings ...string) string {
@@ -79,15 +78,24 @@ func (fred *Frederica) truncateMessages(messages []gogpt.ChatCompletionMessage, 
 
 func (fred *Frederica) getLatestMessages(channelID, ts string, maxTokens int) ([]gogpt.ChatCompletionMessage, error) {
 	log.Println("getting replies", channelID, ts)
-	replies, _, _, err := fred.slackClient.GetConversationReplies(&slack.GetConversationRepliesParameters{
+
+	response, err := fred.slackClient.GetConversationHistory(&slack.GetConversationHistoryParameters{
 		ChannelID: channelID,
-		Timestamp: ts,
+		//Latest:    ts,
 	})
+	//replies, _, _, err := fred.slackClient.GetConversationReplies(&slack.GetConversationRepliesParameters{
+	//	ChannelID: channelID,
+	//	Timestamp: ts,
+	//})
 	if err != nil {
 		return nil, fmt.Errorf("failed getting conversation history: %v", err)
 	}
+	replies := response.Messages
 	if len(replies) == 0 {
 		return nil, fmt.Errorf("failed getting conversation history: no messages")
+	}
+	for i, j := 0, len(replies)-1; i < j; i, j = i+1, j-1 {
+		replies[i], replies[j] = replies[j], replies[i]
 	}
 	log.Println("got replies", len(replies))
 	for _, msg := range replies {
@@ -153,7 +161,7 @@ func (fred *Frederica) handleOsieteAI(ev *slackevents.ReactionAddedEvent) {
 		return
 	}
 	completion = fmt.Sprintf("<@%s>\n\n%s", ev.User, completion)
-	err = fred.postOnThread(channelID, completion, ts)
+	err = fred.postOnChannel(channelID, completion)
 	if err != nil {
 		log.Printf("ERROR: failed posting message: %v\n", err)
 		return
@@ -162,6 +170,14 @@ func (fred *Frederica) handleOsieteAI(ev *slackevents.ReactionAddedEvent) {
 
 func (fred *Frederica) postOnThread(channelID, message, ts string) error {
 	_, _, err := fred.slackClient.PostMessage(channelID, slack.MsgOptionText(message, false), slack.MsgOptionTS(ts))
+	if err != nil {
+		return fmt.Errorf("failed posting message: %v", err)
+	}
+	return nil
+}
+
+func (fred *Frederica) postOnChannel(channelID, message string) error {
+	_, _, err := fred.slackClient.PostMessage(channelID, slack.MsgOptionText(message, false))
 	if err != nil {
 		return fmt.Errorf("failed posting message: %v", err)
 	}
@@ -188,7 +204,7 @@ func generateTraceID() string {
 // postErrorMessage posts an error message on the thread
 func (fred *Frederica) postErrorMessage(channelID, ts string, traceID string) {
 	message := fmt.Sprintf("エラーが発生しました。また後で試してね。 %s", traceID)
-	err := fred.postOnThread(channelID, message, ts)
+	err := fred.postOnChannel(channelID, message)
 	if err != nil {
 		log.Printf("failed to access OpenAI API: %v\n", err)
 	}
@@ -214,7 +230,7 @@ func (fred *Frederica) handleMention(ev *slackevents.AppMentionEvent) {
 		log.Printf("ERROR: failed creating chat completion %s: %v\n", traceID, err)
 		return
 	}
-	err = fred.postOnThread(ev.Channel, completion, ts)
+	err = fred.postOnChannel(ev.Channel, completion)
 	if err != nil {
 		log.Printf("ERROR: failed posting message: %v\n", err)
 		return
