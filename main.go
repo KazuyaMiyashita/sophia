@@ -156,23 +156,12 @@ func (fred *Frederica) handleMention(ev *slackevents.AppMentionEvent) {
 		return
 	}
 	ts := FirstNonEmptyString(ev.ThreadTimeStamp, ev.TimeStamp)
-	//truncated, err := fred.getLatestMessages(ev.Channel, ts, 3000)
-	//if err != nil {
-	//	log.Printf("ERROR: failed getting latest messages: %v\n", err)
-	//	return
-	//}
-	//// prepend prelude to truncated
-	//truncated = append(append(fred.preludes, truncated...), fred.postludes...)
-	//logMessages(truncated)
 
 	response, err := fred.slackClient.GetConversationHistory(&slack.GetConversationHistoryParameters{
 		ChannelID: ev.Channel,
 		//Latest:    ts,
 	})
-	//replies, _, _, err := fred.slackClient.GetConversationReplies(&slack.GetConversationRepliesParameters{
-	//	ChannelID: channelID,
-	//	Timestamp: ts,
-	//})
+
 	if err != nil {
 		return
 	}
@@ -181,7 +170,7 @@ func (fred *Frederica) handleMention(ev *slackevents.AppMentionEvent) {
 		return
 	}
 	var truncated []string
-	truncated = append(truncated, replies[0].Text)
+	truncated = append(truncated, strings.ReplaceAll(replies[0].Text, "<@U04U6P4DMH6>", ""))
 
 	completion, err := fred.createChatCompletion(context.Background(), truncated)
 	if err != nil {
@@ -190,11 +179,13 @@ func (fred *Frederica) handleMention(ev *slackevents.AppMentionEvent) {
 		log.Printf("ERROR: failed creating chat completion %s: %v\n", traceID, err)
 		return
 	}
-	err = fred.postOnChannel(ev.Channel, completion)
-	if err != nil {
-		log.Printf("ERROR: failed posting message: %v\n", err)
-		return
-	}
+	log.Println(completion)
+	//err = fred.postOnChannel(ev.Channel, completion)
+	//if err != nil {
+	//	log.Printf("ERROR: failed posting message: %v\n", err)
+	//	return
+	//}
+	return
 }
 
 func (fred *Frederica) handleEventTypeEventsAPI(evt *socketmode.Event) error {
