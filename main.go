@@ -180,11 +180,11 @@ func (fred *Frederica) handleMention(ev *slackevents.AppMentionEvent) {
 		return
 	}
 	log.Println(completion)
-	//err = fred.postOnChannel(ev.Channel, completion)
-	//if err != nil {
-	//	log.Printf("ERROR: failed posting message: %v\n", err)
-	//	return
-	//}
+	err = fred.postOnChannel(ev.Channel, completion)
+	if err != nil {
+		log.Printf("ERROR: failed posting message: %v\n", err)
+		return
+	}
 	return
 }
 
