@@ -1,18 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	tokenizer "github.com/samber/go-gpt-3-encoder"
 	gogpt "github.com/sashabaranov/go-gpt3"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
+	"io/ioutil"
 	"log"
 	"math/big"
+	"net/http"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
+	"time"
 )
 
 func FirstNonEmptyString(strings ...string) string {
@@ -81,12 +89,7 @@ func (fred *Frederica) getLatestMessages(channelID, ts string, maxTokens int) ([
 
 	response, err := fred.slackClient.GetConversationHistory(&slack.GetConversationHistoryParameters{
 		ChannelID: channelID,
-		//Latest:    ts,
 	})
-	//replies, _, _, err := fred.slackClient.GetConversationReplies(&slack.GetConversationRepliesParameters{
-	//	ChannelID: channelID,
-	//	Timestamp: ts,
-	//})
 	if err != nil {
 		return nil, fmt.Errorf("failed getting conversation history: %v", err)
 	}
@@ -128,46 +131,6 @@ func logMessages(messages []gogpt.ChatCompletionMessage) {
 	log.Println("-----MESSAGES_END-----")
 }
 
-func (fred *Frederica) handleOsieteAI(ev *slackevents.ReactionAddedEvent) {
-
-	channelID := ev.Item.Channel
-	srcMessage, err := fred.getMessage(channelID, ev.Item.Timestamp)
-	if err != nil {
-		log.Printf("ERROR: failed getting message: %v\n", err)
-		return
-	}
-
-	ts := FirstNonEmptyString(srcMessage.ThreadTimestamp, srcMessage.Timestamp)
-	truncated, err := fred.getLatestMessages(channelID, ts, 3000)
-	if err != nil {
-		log.Printf("ERROR: failed getting latest messages: %v\n", err)
-		return
-	}
-	// prepend prelude to truncated
-	truncated = append(append(fred.preludes, truncated...), fred.postludes...)
-	// append reaction message if it's not located at the end
-	if len(truncated) == 0 || truncated[len(truncated)-1].Content != srcMessage.Text {
-		truncated = append(truncated, gogpt.ChatCompletionMessage{
-			Role:    "user",
-			Content: srcMessage.Text,
-		})
-	}
-	logMessages(truncated)
-	completion, err := fred.createChatCompletion(context.Background(), truncated)
-	if err != nil {
-		traceID := generateTraceID()
-		fred.postErrorMessage(channelID, ts, traceID)
-		log.Printf("ERROR: failed creating chat completion %s: %v\n", traceID, err)
-		return
-	}
-	completion = fmt.Sprintf("<@%s>\n\n%s", ev.User, completion)
-	err = fred.postOnChannel(channelID, completion)
-	if err != nil {
-		log.Printf("ERROR: failed posting message: %v\n", err)
-		return
-	}
-}
-
 func (fred *Frederica) postOnThread(channelID, message, ts string) error {
 	_, _, err := fred.slackClient.PostMessage(channelID, slack.MsgOptionText(message, false), slack.MsgOptionTS(ts))
 	if err != nil {
@@ -181,6 +144,39 @@ func (fred *Frederica) postOnChannel(channelID, message string) error {
 	if err != nil {
 		return fmt.Errorf("failed posting message: %v", err)
 	}
+	return nil
+}
+
+func (fred *Frederica) postOnChannelWithImage(channelID, message string, base64image string) error {
+	// We need to write the base64 image as a png on disk to upload to Slack.
+	// We create a unique file name for the image.
+	uploadedFileKey := fmt.Sprintf("slack-image-%d.png", time.Now().UnixNano())
+
+	dec, err := base64.StdEncoding.DecodeString(base64image)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64 image: %w", err)
+	}
+	f, err := os.Create(uploadedFileKey)
+	if err != nil {
+		return fmt.Errorf("failed to create file on disk: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(dec); err != nil {
+		return fmt.Errorf("failed to write file on disk: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("failed to sync file on disk")
+	}
+
+	fileUploadParams := slack.FileUploadParameters{
+		Filetype:       "image/png",
+		Filename:       "generated-image.png",
+		File:           uploadedFileKey,
+		InitialComment: message,
+		Channels:       []string{channelID},
+	}
+	_, err = fred.socketClient.UploadFile(fileUploadParams)
+
 	return nil
 }
 
@@ -224,17 +220,79 @@ func (fred *Frederica) handleMention(ev *slackevents.AppMentionEvent) {
 	truncated = append(append(fred.preludes, truncated...), fred.postludes...)
 	logMessages(truncated)
 	completion, err := fred.createChatCompletion(context.Background(), truncated)
+
 	if err != nil {
 		traceID := generateTraceID()
 		fred.postErrorMessage(ev.Channel, ts, traceID)
 		log.Printf("ERROR: failed creating chat completion %s: %v\n", traceID, err)
 		return
 	}
-	err = fred.postOnChannel(ev.Channel, completion)
-	if err != nil {
-		log.Printf("ERROR: failed posting message: %v\n", err)
-		return
+
+	r := regexp.MustCompile("{\"prompt\": \"(.*)\"}")
+	prompts := r.FindStringSubmatch(completion)
+	if len(prompts) != 0 {
+		prompt := prompts[1]
+		message := strings.ReplaceAll(completion, prompts[0], "")
+
+		log.Printf("お絵描きモード: message: %s, prompt: %s\n", message, prompt)
+
+		base64image, err := generateImage(prompt)
+		if err != nil {
+			log.Printf("ERROR: generate image returns error: %v\n", err)
+			return
+		}
+		//log.Printf("generateImage response: %s\n", base64image)
+
+		err = fred.postOnChannelWithImage(ev.Channel, message, base64image)
+		if err != nil {
+			log.Printf("ERROR: failed posting message with image: %v\n", err)
+			return
+		}
+	} else {
+		log.Printf("通常モード\n")
+
+		err = fred.postOnChannel(ev.Channel, completion)
+		if err != nil {
+			log.Printf("ERROR: failed posting message: %v\n", err)
+			return
+		}
 	}
+
+}
+
+type GenerateImageRequest struct {
+	prompt string
+	steps  int
+}
+
+// returns base 64 encoded png image
+func generateImage(prompt string) (string, error) {
+	httpposturl := "http://127.0.0.1:7860/sdapi/v1/txt2img"
+
+	//fmt.Println("HTTP JSON POST URL:", httpposturl)
+
+	jsonData, _ := json.Marshal(GenerateImageRequest{prompt: prompt, steps: 20})
+	request, error := http.NewRequest("POST", httpposturl, bytes.NewBuffer(jsonData))
+	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+
+	client := &http.Client{}
+	response, error := client.Do(request)
+	if error != nil {
+		return "", error
+	}
+	defer response.Body.Close()
+
+	//fmt.Println("response Status:", response.Status)
+	//fmt.Println("response Headers:", response.Header)
+	body, _ := ioutil.ReadAll(response.Body)
+	//bodyStr := string(body)
+	//fmt.Println("response Body:", bodyStr)
+
+	var jsonObj interface{}
+	_ = json.Unmarshal(body, &jsonObj)
+	base64Image := jsonObj.(map[string]interface{})["images"].([]interface{})[0].(string)
+
+	return base64Image, nil
 }
 
 func (fred *Frederica) handleEventTypeEventsAPI(evt *socketmode.Event) error {
@@ -251,10 +309,6 @@ func (fred *Frederica) handleEventTypeEventsAPI(evt *socketmode.Event) error {
 		switch ev := innerEvent.Data.(type) {
 		case *slackevents.AppMentionEvent:
 			go fred.handleMention(ev)
-		case *slackevents.ReactionAddedEvent:
-			if ev.Item.Type == "message" && ev.Reaction == "osiete_ai" {
-				go fred.handleOsieteAI(ev)
-			}
 		case *slackevents.MemberJoinedChannelEvent:
 			fmt.Printf("user %q joined to channel %q", ev.User, ev.Channel)
 		}
