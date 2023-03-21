@@ -33,16 +33,18 @@ func FirstNonEmptyString(strings ...string) string {
 }
 
 type Frederica struct {
-	slackClient    *slack.Client
-	socketClient   *socketmode.Client
-	gptClient      *gogpt.Client
-	gptTemperature float32
-	gptMaxTokens   int
-	gptEncoder     *tokenizer.Encoder
-	botID          string
-	botUserID      string
-	preludes       []gogpt.ChatCompletionMessage
-	postludes      []gogpt.ChatCompletionMessage
+	slackClient         *slack.Client
+	socketClient        *socketmode.Client
+	gptClient           *gogpt.Client
+	gptTemperature      float32
+	gptMaxTokens        int
+	gptEncoder          *tokenizer.Encoder
+	botID               string
+	botUserID           string
+	preludes            []gogpt.ChatCompletionMessage
+	postludes           []gogpt.ChatCompletionMessage
+	imagePrompt         string
+	imageNegativePrompt string
 }
 
 func convertConversation(messages []slack.Message, botID string) []gogpt.ChatCompletionMessage {
@@ -236,7 +238,7 @@ func (fred *Frederica) handleMention(ev *slackevents.AppMentionEvent) {
 
 		log.Printf("お絵描きモード: message: %s, prompt: %s\n", message, prompt)
 
-		base64image, err := generateImage(prompt)
+		base64image, err := generateImage(prompt, fred.imagePrompt, fred.imageNegativePrompt)
 		if err != nil {
 			log.Printf("ERROR: generate image returns error: %v\n", err)
 			return
@@ -261,17 +263,18 @@ func (fred *Frederica) handleMention(ev *slackevents.AppMentionEvent) {
 }
 
 type GenerateImageRequest struct {
-	prompt string
-	steps  int
+	prompt          string
+	negative_prompt string
+	steps           int
 }
 
 // returns base 64 encoded png image
-func generateImage(prompt string) (string, error) {
+func generateImage(prompt string, imagePrompt string, imageNegativePrompt string) (string, error) {
 	httpposturl := "http://127.0.0.1:7860/sdapi/v1/txt2img"
 
 	//fmt.Println("HTTP JSON POST URL:", httpposturl)
 
-	jsonData, _ := json.Marshal(GenerateImageRequest{prompt: prompt, steps: 20})
+	jsonData, _ := json.Marshal(GenerateImageRequest{prompt: imagePrompt + prompt, negative_prompt: imageNegativePrompt, steps: 20})
 	request, error := http.NewRequest("POST", httpposturl, bytes.NewBuffer(jsonData))
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
 
@@ -402,6 +405,16 @@ func main() {
 
 	postludeMessage := gogpt.ChatCompletionMessage{Role: "system", Content: systemMessagePost}
 
+	imagePrompt, found := os.LookupEnv("IMAGE_PROMPT")
+	if !found {
+		imagePrompt = ""
+	}
+
+	imageNegativePrompt, found := os.LookupEnv("IMAGE_NEGATIVE_PROMPT")
+	if !found {
+		imagePrompt = ""
+	}
+
 	slackClient := slack.New(
 		botToken,
 		slack.OptionDebug(false),
@@ -422,16 +435,18 @@ func main() {
 		panic(err)
 	}
 	fred := &Frederica{
-		slackClient:    slackClient,
-		socketClient:   socketClient,
-		gptClient:      gptClient,
-		gptEncoder:     gptEncoder,
-		gptTemperature: gptTemperature,
-		gptMaxTokens:   gptMaxTokens,
-		botID:          authTestResponse.BotID,
-		botUserID:      authTestResponse.UserID,
-		preludes:       []gogpt.ChatCompletionMessage{preludeMessage},
-		postludes:      []gogpt.ChatCompletionMessage{postludeMessage},
+		slackClient:         slackClient,
+		socketClient:        socketClient,
+		gptClient:           gptClient,
+		gptEncoder:          gptEncoder,
+		gptTemperature:      gptTemperature,
+		gptMaxTokens:        gptMaxTokens,
+		botID:               authTestResponse.BotID,
+		botUserID:           authTestResponse.UserID,
+		preludes:            []gogpt.ChatCompletionMessage{preludeMessage},
+		postludes:           []gogpt.ChatCompletionMessage{postludeMessage},
+		imagePrompt:         imagePrompt,
+		imageNegativePrompt: imageNegativePrompt,
 	}
 
 	go fred.eventLoop()
